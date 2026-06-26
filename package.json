@@ -1,0 +1,22 @@
+{
+  "name": "cyberxscore",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@cyberxscore/web",
+    "dev:api": "npm run start:dev --workspace=@cyberxscore/api",
+    "build": "npm run build:scoring && npm run build:api && npm run build:web",
+    "build:scoring": "npm run build --workspace=@cyberxscore/scoring",
+    "build:api": "npm run build --workspace=@cyberxscore/api",
+    "build:web": "npm run build --workspace=@cyberxscore/web",
+    "prisma:generate": "npm run prisma:generate --workspace=@cyberxscore/api",
+    "prisma:migrate": "npm run prisma:migrate --workspace=@cyberxscore/api",
+    "prisma:push": "npm run prisma:push --workspace=@cyberxscore/api",
+    "prisma:studio": "npm run prisma:studio --workspace=@cyberxscore/api",
+    "seed": "npm run seed --workspace=@cyberxscore/api"
+  }
+}

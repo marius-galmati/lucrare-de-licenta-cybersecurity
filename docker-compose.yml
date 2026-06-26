@@ -1,0 +1,89 @@
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cyberxscore
+      POSTGRES_USER: cyberxscore
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - /opt/cyberxscore/postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cyberxscore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+    # NOT exposed publicly — internal network only
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cyberxscore:${DB_PASSWORD}@db:5432/cyberxscore?schema=public
+      PORT: 3001
+      NODE_ENV: production
+      JWT_SECRET: ${JWT_SECRET}
+      ANONYMOUS_JWT_SECRET: ${ANONYMOUS_JWT_SECRET}
+      SUPER_ADMIN_EMAILS: ${SUPER_ADMIN_EMAILS:-admin@example.com}
+      FRONTEND_URL: ${FRONTEND_URL:-https://mvp.cyberxscore.com}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_SECURE: ${SMTP_SECURE:-true}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3001/api/questions || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks: [internal, external]
+    # Internal for DB/web access, external for SMTP outbound
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: /api
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      INTERNAL_API_URL: http://api:3001/api
+      NEXT_PUBLIC_API_URL: /api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks: [internal]
+    # NOT exposed publicly — Nginx proxies
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    depends_on: [web, api]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Mount live (symlinks) + archive (targets) at their real host paths so the
+      # relative symlinks resolve inside the container and `nginx -s reload`
+      # picks up renewed certs without recreating the container.
+      - /etc/letsencrypt/live/mvp.cyberxscore.com:/etc/letsencrypt/live/mvp.cyberxscore.com:ro
+      - /etc/letsencrypt/archive/mvp.cyberxscore.com:/etc/letsencrypt/archive/mvp.cyberxscore.com:ro
+      # Webroot for Let's Encrypt ACME http-01 challenges
+      - /var/www/certbot:/var/www/certbot:ro
+    networks: [internal, external]
+
+networks:
+  internal:
+    internal: true
+  external:
+    driver: bridge

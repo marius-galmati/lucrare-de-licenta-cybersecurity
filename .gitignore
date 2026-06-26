@@ -1,0 +1,45 @@
+# Dependencies
+node_modules
+
+# Build outputs
+dist
+dist-ssr
+.next
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Prisma
+prisma/generated
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Docker volumes
+postgres-data
+
+# OS
+Thumbs.db
+
+# SSL certs (mounted at runtime)
+nginx/ssl/*.pem
+nginx/ssl/*.key
+
+# TypeScript incremental build cache
+*.tsbuildinfo

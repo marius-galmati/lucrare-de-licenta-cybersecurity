@@ -1,0 +1,305 @@
+// Schema Prisma CyberXscore
+// Definește modelele de date persistate în PostgreSQL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum AppRole {
+  super_admin
+  admin
+  user
+
+  @@map("app_role")
+}
+
+// ============================================================================
+// MODELE
+// ============================================================================
+
+/// Cont de utilizator — autentificare pe bază de email și parolă (hash bcrypt)
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  profile                Profile?
+  roles                  UserRole[]
+  auditLogs              AuditLog[]
+  assessments            Assessment[]
+  resetTokens            PasswordResetToken[]
+  createdQuestions       VersionedQuestion[] @relation("QuestionCreator")
+  createdDedupePairs     DedupePair[]        @relation("DedupePairCreator")
+  updatedDedupePairs     DedupePair[]        @relation("DedupePairUpdater")
+
+  @@map("users")
+}
+
+/// Profil de utilizator — câte unul per cont, creat automat la înregistrare
+model Profile {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @unique @map("user_id") @db.Uuid
+  email            String
+  companyName      String    @map("company_name")
+  companyId        String?   @map("company_id") @db.Uuid
+  termsAcceptedAt  DateTime? @map("terms_accepted_at") @db.Timestamptz
+  termsVersion     String?   @map("terms_version")
+  marketingConsent Boolean   @default(false) @map("marketing_consent")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company? @relation(fields: [companyId], references: [id])
+
+  @@map("profiles")
+}
+
+/// Registrul companiilor
+/// NOTĂ: normalized_name reține numele normalizat (lower(trim(name))) și este
+/// folosit pentru deduplicare. Valoarea este calculată în codul aplicației la scriere.
+model Company {
+  id             String   @id @default(uuid()) @db.Uuid
+  name           String
+  normalizedName String?  @map("normalized_name")
+  primaryEmail   String   @map("primary_email")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  profiles Profile[]
+
+  @@index([normalizedName], map: "idx_companies_normalized_name")
+  @@map("companies")
+}
+
+/// Evaluare — o singură sesiune de chestionar
+model Assessment {
+  id                   String    @id @default(uuid()) @db.Uuid
+  userId               String?   @map("user_id") @db.Uuid
+  sessionToken         String    @unique @map("session_token")
+  language             String    @default("en")
+  status               String    @default("in_progress")
+  dedupeResolutionJson Json?     @map("dedupe_resolution_json") @db.JsonB
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  completedAt          DateTime? @map("completed_at") @db.Timestamptz
+
+  user       User?      @relation(fields: [userId], references: [id])
+  answers    Answer[]
+  scores     Score[]
+  shareLinks ShareLink[]
+
+  @@index([userId], map: "idx_assessments_user_id")
+  @@index([sessionToken], map: "idx_assessments_session_token")
+  @@map("assessments")
+}
+
+/// Răspuns — înregistrare append-only a unui singur răspuns la un gate sau o întrebare
+model Answer {
+  id                String   @id @default(uuid()) @db.Uuid
+  assessmentId      String   @map("assessment_id") @db.Uuid
+  refType           String   @map("ref_type")
+  refCode           String   @map("ref_code")
+  valueJson         Json     @map("value_json") @db.JsonB
+  questionVersionId String?  @map("question_version_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  assessment      Assessment         @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  questionVersion VersionedQuestion? @relation(fields: [questionVersionId], references: [id])
+
+  @@index([assessmentId, createdAt], map: "idx_answers_assessment_created")
+  @@map("answers")
+}
+
+/// Scor — rezultatul calculat pentru o evaluare finalizată
+model Score {
+  id            String   @id @default(uuid()) @db.Uuid
+  assessmentId  String   @map("assessment_id") @db.Uuid
+  scoreValue    Decimal  @map("score_value")
+  riskScore     Decimal  @map("risk_score")
+  maturityScore Decimal  @map("maturity_score")
+  breakdownJson Json     @map("breakdown_json") @db.JsonB
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@index([assessmentId, createdAt], map: "idx_scores_assessment_created")
+  @@map("scores")
+}
+
+/// Link de partajare — acces public, doar pentru citire, la rezultatele evaluării
+model ShareLink {
+  id           String    @id @default(uuid()) @db.Uuid
+  assessmentId String    @map("assessment_id") @db.Uuid
+  token        String    @unique
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@index([token], map: "idx_share_links_token")
+  @@map("share_links")
+}
+
+/// Atribuire de rol RBAC
+model UserRole {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  role      AppRole
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+  @@map("user_roles")
+}
+
+/// Definiția versionată a unei întrebări/gate (conținutul evaluării stocat în baza de date)
+model VersionedQuestion {
+  id                   String   @id @default(uuid()) @db.Uuid
+  code                 String
+  version              Int      @default(1)
+  status               String   @default("active")
+  domain               String
+  category             String
+  answerType           String   @map("answer_type")
+  weightPoints         Int      @default(0) @map("weight_points")
+  textRo               String   @map("text_ro")
+  textEn               String   @map("text_en")
+  recommendationRo     String?  @map("recommendation_ro")
+  recommendationEn     String?  @map("recommendation_en")
+  optionsJson          Json?    @map("options_json") @db.JsonB
+  scoringInclusionRule String?  @map("scoring_inclusion_rule")
+  metadataJson         Json?    @map("metadata_json") @db.JsonB
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz
+  createdByUserId      String?  @map("created_by_user_id") @db.Uuid
+
+  createdBy User?    @relation("QuestionCreator", fields: [createdByUserId], references: [id])
+  answers   Answer[]
+
+  @@unique([code, version])
+  @@index([code], map: "idx_versioned_questions_code")
+  @@index([status], map: "idx_versioned_questions_status")
+  @@index([category], map: "idx_versioned_questions_category")
+  @@map("versioned_questions")
+}
+
+/// Jurnal de audit imutabil
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  actionType  String   @map("action_type")
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  detailsJson Json?    @map("details_json") @db.JsonB
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId], map: "idx_audit_logs_user_id")
+  @@index([actionType], map: "idx_audit_logs_action_type")
+  @@index([createdAt], map: "idx_audit_logs_created_at")
+  @@map("audit_logs")
+}
+
+/// Maparea de deduplicare gate-întrebare
+model DedupePair {
+  id              String   @id @default(uuid()) @db.Uuid
+  gateCode        String   @unique @map("gate_code")
+  questionCode    String   @unique @map("question_code")
+  status          String   @default("active")
+  notes           String?
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  updatedByUserId String?  @map("updated_by_user_id") @db.Uuid
+
+  createdBy User? @relation("DedupePairCreator", fields: [createdByUserId], references: [id])
+  updatedBy User? @relation("DedupePairUpdater", fields: [updatedByUserId], references: [id])
+
+  @@index([status], map: "idx_dedupe_pairs_status")
+  @@map("dedupe_pairs")
+}
+
+/// Regulă de activare a unui gate — regulile sunt definite în baza de date
+model GateRule {
+  id                  String   @id @default(uuid()) @db.Uuid
+  gateCode            String   @map("gate_code")
+  condition           String
+  activateQuestions   Json     @default("[]") @map("activate_questions") @db.JsonB
+  skipQuestions       Json     @default("[]") @map("skip_questions") @db.JsonB
+  setNa               Json     @default("[]") @map("set_na") @db.JsonB
+  categoryMultipliers Json     @default("{}") @map("category_multipliers") @db.JsonB
+  effects             Json     @default("{}") @db.JsonB
+  flags               Json     @default("{}") @db.JsonB
+  sortOrder           Int      @default(0) @map("sort_order")
+  isActive            Boolean  @default(true) @map("is_active")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([gateCode, condition])
+  @@index([gateCode], map: "idx_gate_rules_gate_code")
+  @@index([isActive], map: "idx_gate_rules_is_active")
+  @@map("gate_rules")
+}
+
+/// Opțiune de tip de răspuns — definițiile opțiunilor și scorurilor fiecărui tip de răspuns, stocate în baza de date
+model AnswerTypeOption {
+  id         String   @id @default(uuid()) @db.Uuid
+  answerType String   @map("answer_type")
+  value      String
+  labelEn    String   @map("label_en")
+  labelRo    String   @map("label_ro")
+  score      Decimal  @db.Decimal(4, 3)
+  sortOrder  Int      @default(0) @map("sort_order")
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([answerType, value])
+  @@index([answerType], map: "idx_answer_type_options_type")
+  @@map("answer_type_options")
+}
+
+/// Definiția unei categorii de scoring — sursa de adevăr din baza de date pentru punctajul maxim și denumirile afișate ale categoriilor
+model ScoringCategory {
+  id        String   @id @default(uuid()) @db.Uuid
+  key       String   @unique
+  domain    String
+  maxPoints Int      @map("max_points")
+  nameEn    String   @map("name_en")
+  nameRo    String   @map("name_ro")
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([domain], map: "idx_scoring_categories_domain")
+  @@index([isActive], map: "idx_scoring_categories_is_active")
+  @@map("scoring_categories")
+}
+
+/// Token de resetare a parolei — persistat pentru a urmări utilizarea unică
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  userId    String    @map("user_id") @db.Uuid
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  usedAt    DateTime? @map("used_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_reset_tokens")
+}
